@@ -58,7 +58,7 @@ export const AdminTableManagement = ({ onLaunchCustomerView }) => {
               Table &amp; Floor QR Management
             </h1>
             <span className="px-2.5 py-0.5 rounded-full text-xs bg-pink-50 text-[#89023e] border border-pink-200 font-semibold">
-              Live Engine v2.4
+              Floor Management
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
@@ -273,7 +273,7 @@ export const AdminTableManagement = ({ onLaunchCustomerView }) => {
                       <button 
                         onClick={() => handleLaunchQR(tbl)}
                         className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 rounded-lg text-[10px] font-semibold border border-slate-200 flex items-center gap-1 transition-colors"
-                        title="Simulate customer opening this QR"
+                        title="Open Table QR Menu"
                       >
                         <ExternalLink className="w-3 h-3 text-[#89023e]" /> Open Menu
                       </button>
@@ -368,7 +368,7 @@ export const AdminTableManagement = ({ onLaunchCustomerView }) => {
                   setQrModalTable(null);
                 }}
                 className="py-2.5 px-3 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1"
-                title="Simulate customer opening"
+                title="Open Live Menu"
               >
                 <ExternalLink className="w-4 h-4" />
               </button>

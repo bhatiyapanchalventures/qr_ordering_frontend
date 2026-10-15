@@ -121,12 +121,12 @@ export const AdminLogin = ({ onLoginSuccess, targetView = 'analytics' }) => {
           {/* Subtle top indicator bar */}
           <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#89023e] via-rose-500 to-amber-500"></div>
 
-          {/* Quick Demo Credentials Pill Banner */}
+          {/* Manager Terminal Access Helper */}
           <div className="mb-6 p-3 rounded-2xl bg-slate-950/80 border border-rose-900/40 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-xs">
-              <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
               <div>
-                <span className="text-slate-400">Owner Access: </span>
+                <span className="text-slate-400">Manager Terminal: </span>
                 <span className="font-mono font-bold text-rose-300 tracking-wider">9586784989</span>
                 <span className="text-slate-500 mx-1">&bull;</span>
                 <span className="font-mono font-bold text-rose-300 tracking-wider">600300</span>
@@ -139,7 +139,7 @@ export const AdminLogin = ({ onLoginSuccess, targetView = 'analytics' }) => {
               title="Click to fill credentials"
             >
               <Sparkles className="w-3 h-3 text-amber-300" />
-              <span>Auto-Fill</span>
+              <span>Fill</span>
             </button>
           </div>
 

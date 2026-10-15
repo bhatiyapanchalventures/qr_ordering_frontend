@@ -563,7 +563,7 @@ export const CustomerMenu = ({ onNavigateToKDS }) => {
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2 text-[#89023e] font-bold text-sm">
                 <QrCode className="w-4 h-4" />
-                <span>Simulate Table QR Scan</span>
+                <span>Select Dine-in Table</span>
               </div>
               <button onClick={() => setIsQrModalOpen(false)} className="text-slate-400 hover:text-slate-700">
                 <X className="w-5 h-5" />
@@ -578,7 +578,7 @@ export const CustomerMenu = ({ onNavigateToKDS }) => {
             </div>
 
             <p className="text-xs text-slate-500 mb-4">
-              Select any table to bind this ordering session:
+              Select a table to begin ordering:
             </p>
 
             <div className="grid grid-cols-4 gap-2 mb-4 max-h-40 overflow-y-auto pr-1">

@@ -111,32 +111,6 @@ export const AdminLiveKDS = () => {
               <span>{soundEnabled ? 'Buzzers Active' : 'Buzzers Muted'}</span>
             </button>
 
-            {/* Test Buzzers */}
-            <div className="hidden sm:flex items-center gap-1 bg-slate-100 dark:bg-slate-900 p-0.5 rounded-xl border border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => {
-                  playNewOrderBuzzer();
-                  showToast('🔔 Fired Kitchen Ticket Buzzer (Ding-Ding-Ding)!', 'info');
-                }}
-                className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:text-[#89023e] dark:hover:text-rose-400 transition-colors rounded-lg hover:bg-white dark:hover:bg-slate-800"
-                title="Test 3-tone Kitchen New Order Chime"
-              >
-                🔔 Test Kitchen
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  playOrderReadyBuzzer();
-                  showToast('🍽️ Fired Waiter Staff Ready Bell (Ding-Dong)!', 'info');
-                }}
-                className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:text-emerald-700 dark:hover:text-emerald-400 transition-colors rounded-lg hover:bg-white dark:hover:bg-slate-800"
-                title="Test 2-tone Waiter Runner Pickup Bell"
-              >
-                🍽️ Test Waiter
-              </button>
-            </div>
-
             <div className={`px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold border ${
               isTvMode ? 'bg-slate-900 text-slate-200 border-slate-800' : 'bg-slate-100 text-slate-700 border-slate-200'
             }`}>

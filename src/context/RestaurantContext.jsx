@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { initialMenuItems, initialTables, initialOrders } from '../data/mockData';
 import confetti from 'canvas-confetti';
 import { 
@@ -6,13 +6,30 @@ import {
   playOrderReadyBuzzer, 
   playWaiterCallBuzzer 
 } from '../utils/audioAlerts';
+import { formatINR } from '../utils/currency';
+import {
+  getCustomerMenu,
+  getAdminTables,
+  getKdsOrders,
+  submitOrderApi,
+  updateTableStatusApi,
+  bumpOrderStatusApi,
+  toggleItemStockApi,
+  createMenuItemApi,
+  callServerApi,
+  toggleEmergencyHoldApi
+} from '../services/apiClient';
+import {
+  getSocket,
+  joinTableRoom,
+  joinKdsRoom,
+  joinAdminRoom
+} from '../services/socket';
 
 const RestaurantContext = createContext(null);
 
-import { formatINR } from '../utils/currency';
-
 export const RestaurantProvider = ({ children }) => {
-  // Menu items (Synced between Admin & Customer with INR support)
+  // Menu items (Synced between Backend, Admin & Customer with INR support)
   const [menuItems, setMenuItems] = useState(() => {
     const saved = localStorage.getItem('vb_menu_items_inr');
     return saved ? JSON.parse(saved) : initialMenuItems;
@@ -43,9 +60,10 @@ export const RestaurantProvider = ({ children }) => {
     'm3': { item: initialMenuItems[2], qty: 1, notes: 'Standard' }
   });
 
-  // Toast / System Notifications
+  // System Notifications & Capacity Control
   const [toast, setToast] = useState(null);
   const [emergencyHold, setEmergencyHold] = useState(false);
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
 
   // Sound Alerts Toggle (New Orders Buzzer, Ready Bells)
   const [soundEnabled, setSoundEnabled] = useState(() => {
@@ -71,6 +89,11 @@ export const RestaurantProvider = ({ children }) => {
       return null;
     }
   });
+
+  const showToast = useCallback((message, type = 'info', action = null) => {
+    setToast({ message, type, action });
+    setTimeout(() => setToast(null), 4500);
+  }, []);
 
   const loginAdmin = (adminData, remember = true) => {
     const session = {
@@ -114,55 +137,154 @@ export const RestaurantProvider = ({ children }) => {
     showToast('Admin profile & restaurant credentials saved!', 'success');
   };
 
-  // Cross-Tab & Cross-Device Audio Broadcast Listener
-  // When customer places order in one tab or phone, admin laptop & kitchen monitors ring immediately!
+  /* ==========================================================================
+     1. INITIAL BACKEND DATA SYNC (REST API)
+     ========================================================================== */
   useEffect(() => {
+    let isMounted = true;
+
+    const syncInitialData = async () => {
+      try {
+        // Fetch Menu from API
+        const menuRes = await getCustomerMenu();
+        if (isMounted && menuRes?.data?.data && Array.isArray(menuRes.data.data)) {
+          setMenuItems(menuRes.data.data);
+          setIsBackendConnected(true);
+        }
+      } catch (e) {
+        // Silent fallback to cached/mock data
+      }
+
+      try {
+        // Fetch Tables from API
+        const tablesRes = await getAdminTables();
+        if (isMounted && tablesRes?.data?.data && Array.isArray(tablesRes.data.data)) {
+          setTables(tablesRes.data.data);
+          setIsBackendConnected(true);
+        }
+      } catch (e) {}
+
+      try {
+        // Fetch KDS Orders from API
+        const kdsRes = await getKdsOrders();
+        if (isMounted && kdsRes?.data?.data) {
+          const apiOrders = Array.isArray(kdsRes.data.data) 
+            ? kdsRes.data.data 
+            : Object.values(kdsRes.data.data).flat();
+          if (apiOrders.length > 0) {
+            setOrders(apiOrders);
+            setIsBackendConnected(true);
+          }
+        }
+      } catch (e) {}
+    };
+
+    syncInitialData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  /* ==========================================================================
+     2. REAL-TIME SOCKET.IO GATEWAY & BROADCAST BUS
+     ========================================================================== */
+  useEffect(() => {
+    const socket = getSocket();
+    socket.connect();
+
+    // Subscribe to Rooms
+    joinKdsRoom();
+    joinAdminRoom();
+    if (activeTable?.number) {
+      joinTableRoom(activeTable.number);
+    }
+
+    // 1. New Order Fired by customer
+    const handleOrderCreated = ({ order }) => {
+      if (!order) return;
+      if (soundEnabled) {
+        playNewOrderBuzzer();
+      }
+      setOrders(prev => {
+        if (prev.some(o => o.id === order.id || o.orderNumber === order.orderNumber)) return prev;
+        return [order, ...prev];
+      });
+      showToast(`🔔 New Order fired for Table ${order.tableNumber}!`, 'success', 'View KDS');
+    };
+
+    // 2. Ticket Status Bumped
+    const handleStatusUpdated = ({ orderId, status, tableNumber }) => {
+      if (status === 'ready' && soundEnabled) {
+        playOrderReadyBuzzer();
+      }
+      setOrders(prev => prev.map(o => (o.id === orderId || o.orderNumber === orderId) ? { ...o, status } : o));
+      if (status === 'ready') {
+        showToast(`🍽️ Table ${tableNumber || ''} order is Plated & Ready! Waitstaff alerted.`, 'warning');
+      }
+    };
+
+    // 3. 86'd Stock Toggled
+    const handleStockToggled = ({ menuItemId, isAvailable, name }) => {
+      setMenuItems(prev => prev.map(item => 
+        (item.id === menuItemId || item._id === menuItemId) ? { ...item, isAvailable } : item
+      ));
+      showToast(`${name || 'Item'} is now ${isAvailable ? 'Restocked' : "Sold Out (86'd)"}!`, isAvailable ? 'success' : 'warning');
+    };
+
+    // 4. Waiter Call Alert
+    const handleCallWaiter = ({ tableNumber, zone }) => {
+      if (soundEnabled) {
+        playWaiterCallBuzzer();
+      }
+      showToast(`🛎️ Table ${tableNumber} (${zone || 'Floor'}) requested assistance!`, 'info');
+    };
+
+    // 5. Emergency Hold Alert
+    const handleHoldChanged = ({ emergencyHold: holdState }) => {
+      setEmergencyHold(Boolean(holdState));
+      if (holdState) {
+        showToast('Kitchen line at peak capacity. Digital ordering paused.', 'error');
+      } else {
+        showToast('Kitchen line orders resumed.', 'success');
+      }
+    };
+
+    socket.on('order:created', handleOrderCreated);
+    socket.on('order:status_updated', handleStatusUpdated);
+    socket.on('menu:stock_toggled', handleStockToggled);
+    socket.on('server:call_waiter', handleCallWaiter);
+    socket.on('emergency_hold:changed', handleHoldChanged);
+
+    // Cross-Tab Broadcast Channel (Local fallback)
     let channel = null;
     try {
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         channel = new BroadcastChannel('vb_restaurant_live_bus');
         channel.onmessage = (event) => {
           const { type, order, orderId, tableNumber } = event.data || {};
-          
           if (type === 'NEW_ORDER_ALERT' && order) {
-            // Sound the kitchen / admin ticket alert
-            if (soundEnabled) {
-              playNewOrderBuzzer();
-            }
-            // Add to live orders if not already present
-            setOrders(prev => {
-              if (prev.some(o => o.id === order.id)) return prev;
-              return [order, ...prev];
-            });
-            showToast(`🔔 NEW ORDER: Table ${order.tableNumber} (#${order.id}) placed! Firing in kitchen.`, 'success', 'View KDS');
+            handleOrderCreated({ order });
           } else if (type === 'ORDER_READY_ALERT') {
-            // Sound distinct Waiter Staff / Runner pickup bell
-            if (soundEnabled) {
-              playOrderReadyBuzzer();
-            }
-            setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'ready' } : o));
-            showToast(`🍽️ ORDER READY: Table ${tableNumber} is plated & hot at pass! Runners alerted.`, 'warning');
+            handleStatusUpdated({ orderId, status: 'ready', tableNumber });
           } else if (type === 'CALL_WAITER_ALERT') {
-            // Sound service summon chime
-            if (soundEnabled) {
-              playWaiterCallBuzzer();
-            }
-            showToast(`🛎️ Table ${tableNumber} requested a server at their table!`, 'info');
+            handleCallWaiter({ tableNumber });
           }
         };
       }
-    } catch (e) {
-      console.warn('BroadcastChannel not supported or restricted:', e);
-    }
+    } catch (e) {}
 
     return () => {
+      socket.off('order:created', handleOrderCreated);
+      socket.off('order:status_updated', handleStatusUpdated);
+      socket.off('menu:stock_toggled', handleStockToggled);
+      socket.off('server:call_waiter', handleCallWaiter);
+      socket.off('emergency_hold:changed', handleHoldChanged);
       if (channel) {
-        try {
-          channel.close();
-        } catch (e) {}
+        try { channel.close(); } catch (e) {}
       }
     };
-  }, [soundEnabled]);
+  }, [activeTable, soundEnabled, showToast]);
 
   // Sync to local storage
   useEffect(() => {
@@ -177,37 +299,50 @@ export const RestaurantProvider = ({ children }) => {
     localStorage.setItem('vb_orders_inr', JSON.stringify(orders));
   }, [orders]);
 
-  // Show toast notification
-  const showToast = (message, type = 'info', action = null) => {
-    setToast({ message, type, action });
-    setTimeout(() => setToast(null), 4500);
-  };
+  /* ==========================================================================
+     3. USER ACTIONS (CONNECTED TO REST APIS + OPTIMISTIC UI)
+     ========================================================================== */
 
   // Toggle dish 86'd out of stock
-  const toggleItemAvailability = (id) => {
+  const toggleItemAvailability = async (id) => {
+    const currentItem = menuItems.find(m => m.id === id || m._id === id);
+    const nextState = currentItem ? !currentItem.isAvailable : false;
+
+    // Optimistic state update
     setMenuItems(prev => prev.map(item => {
-      if (item.id === id) {
-        const nextState = !item.isAvailable;
-        showToast(
-          nextState ? `Restocked "${item.name}"!` : `86'd "${item.name}" (Marked Sold Out)`,
-          nextState ? 'success' : 'warning'
-        );
+      if (item.id === id || item._id === id) {
         return { ...item, isAvailable: nextState };
       }
       return item;
     }));
+
+    showToast(
+      nextState ? `Restocked "${currentItem?.name || 'Dish'}"!` : `86'd "${currentItem?.name || 'Dish'}" (Sold Out)`,
+      nextState ? 'success' : 'warning'
+    );
+
+    // Call REST API
+    try {
+      await toggleItemStockApi(id, nextState);
+    } catch (e) {}
   };
 
   // Add new dish from Admin Dish Builder
-  const addMenuItem = (newDish) => {
+  const addMenuItem = async (newDish) => {
     const dish = {
       ...newDish,
       id: 'm_' + Date.now(),
       soldCount: 0,
       isAvailable: true
     };
+
     setMenuItems(prev => [dish, ...prev]);
-    showToast(`Published "${dish.name}" to digital QR menus!`, 'success');
+    showToast(`Published "${dish.name}" to digital menus!`, 'success');
+
+    // Call REST API
+    try {
+      await createMenuItemApi(dish);
+    } catch (e) {}
   };
 
   // Cart operations
@@ -217,26 +352,30 @@ export const RestaurantProvider = ({ children }) => {
       if (!existing && delta > 0) {
         const item = menuItems.find(m => m.id === itemId);
         if (!item) return prev;
-        return { ...prev, [itemId]: { item, qty: 1, notes: '' } };
+        return {
+          ...prev,
+          [itemId]: { item, qty: 1, notes: '' }
+        };
       }
       if (!existing) return prev;
 
-      const newQty = existing.qty + delta;
-      if (newQty <= 0) {
-        const next = { ...prev };
-        delete next[itemId];
-        return next;
+      const nextQty = existing.qty + delta;
+      if (nextQty <= 0) {
+        const nextState = { ...prev };
+        delete nextState[itemId];
+        return nextState;
       }
+
       return {
         ...prev,
-        [itemId]: { ...existing, qty: newQty }
+        [itemId]: { ...existing, qty: nextQty }
       };
     });
   };
 
   const addToCartWithOptions = (item, options = {}) => {
     setCart(prev => {
-      const existing = prev[item.id] || { item, qty: 0 };
+      const existing = prev[item.id] || { qty: 0 };
       return {
         ...prev,
         [item.id]: {
@@ -247,11 +386,11 @@ export const RestaurantProvider = ({ children }) => {
         }
       };
     });
-    showToast(`Added ${item.name} to Table ${activeTable.number} order!`, 'success');
+    showToast(`Added ${item.name} to Table ${activeTable.number} check!`, 'success');
   };
 
   // Submit order from Customer QR view
-  const submitOrder = (specialRequest = '', splitBill = false) => {
+  const submitOrder = async (specialRequest = '', splitBill = false) => {
     if (emergencyHold) {
       showToast('Kitchen is currently at peak capacity. Digital orders temporarily paused.', 'error');
       return false;
@@ -259,7 +398,7 @@ export const RestaurantProvider = ({ children }) => {
 
     const cartEntries = Object.values(cart);
     if (cartEntries.length === 0) {
-      showToast('Your cart is empty. Please add items before firing order.', 'warning');
+      showToast('Your order slip is empty. Please add items before submitting.', 'warning');
       return false;
     }
 
@@ -267,6 +406,7 @@ export const RestaurantProvider = ({ children }) => {
     const orderItems = cartEntries.map(({ item, qty, notes }) => {
       subtotal += item.price * qty;
       return {
+        menuItemId: item.id || item._id,
         name: item.name,
         qty,
         notes: notes || 'Standard serve'
@@ -289,10 +429,8 @@ export const RestaurantProvider = ({ children }) => {
       timestamp: 'Just now'
     };
 
-    // Add to Live KDS orders list
+    // Optimistic UI updates
     setOrders(prev => [newOrder, ...prev]);
-
-    // Update table bill & status
     setTables(prev => prev.map(t => {
       if (t.number === activeTable.number) {
         return {
@@ -313,16 +451,14 @@ export const RestaurantProvider = ({ children }) => {
         origin: { y: 0.8 },
         colors: ['#89023e', '#ea638c', '#ffd9e0']
       });
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
 
     // Play New Order Buzzer locally
     if (soundEnabled) {
       playNewOrderBuzzer();
     }
 
-    // Broadcast New Order Alert to Admin laptops, TV screens & Kitchen monitors
+    // Broadcast cross-window alert
     try {
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const channel = new BroadcastChannel('vb_restaurant_live_bus');
@@ -333,26 +469,35 @@ export const RestaurantProvider = ({ children }) => {
         });
         channel.close();
       }
-    } catch (e) {
-      console.warn(e);
-    }
+    } catch (e) {}
 
     showToast(`Order #${newOrder.id} sent to Kitchen Line! Firing now.`, 'success', 'View KDS');
+
+    // Call REST API in background
+    try {
+      await submitOrderApi({
+        tableNumber: activeTable.number,
+        zone: activeTable.zone,
+        items: orderItems,
+        specialRequest: newOrder.specialRequest,
+        splitBill
+      });
+    } catch (e) {}
+
     return newOrder;
   };
 
   // KDS bump ticket to next stage
-  const updateOrderStatus = (orderId, nextStatus) => {
-    const targetOrder = orders.find(ord => ord.id === orderId);
+  const updateOrderStatus = async (orderId, nextStatus) => {
+    const targetOrder = orders.find(ord => ord.id === orderId || ord.orderNumber === orderId);
 
     setOrders(prev => prev.map(ord => {
-      if (ord.id === orderId) {
+      if (ord.id === orderId || ord.orderNumber === orderId) {
         return { ...ord, status: nextStatus };
       }
       return ord;
     }));
 
-    // If marked ready by chef -> sound distinct Waiter / Runner buzzer
     if (nextStatus === 'ready') {
       if (soundEnabled) {
         playOrderReadyBuzzer();
@@ -369,22 +514,40 @@ export const RestaurantProvider = ({ children }) => {
         }
       } catch (e) {}
 
-      showToast(`Order #${orderId} (Table ${targetOrder?.tableNumber || ''}) is PLATED & READY! Waitstaff runner alerted.`, 'warning');
+      showToast(`Order #${orderId} (Table ${targetOrder?.tableNumber || ''}) is Plated & Ready! Waitstaff runner alerted.`, 'warning');
     } else {
       showToast(`Order ${orderId} moved to ${nextStatus}!`, 'info');
     }
+
+    // Call REST API
+    try {
+      await bumpOrderStatusApi(orderId, nextStatus);
+    } catch (e) {}
   };
 
   // Table status toggle
-  const updateTableStatus = (tableId, nextStatus) => {
+  const updateTableStatus = async (tableId, nextStatus) => {
     setTables(prev => prev.map(t => {
-      if (t.id === tableId) return { ...t, status: nextStatus };
+      if (t.id === tableId || t._id === tableId) return { ...t, status: nextStatus };
       return t;
     }));
+
+    try {
+      await updateTableStatusApi(tableId, nextStatus);
+    } catch (e) {}
+  };
+
+  // Toggle Emergency Hold
+  const toggleEmergencyHold = async (hold) => {
+    setEmergencyHold(hold);
+    showToast(hold ? 'Emergency hold activated: ordering paused' : 'Emergency hold lifted', hold ? 'error' : 'success');
+    try {
+      await toggleEmergencyHoldApi(hold);
+    } catch (e) {}
   };
 
   // Call Server action
-  const callWaiter = () => {
+  const callWaiter = async () => {
     if (soundEnabled) {
       playWaiterCallBuzzer();
     }
@@ -400,7 +563,11 @@ export const RestaurantProvider = ({ children }) => {
       }
     } catch (e) {}
 
-    showToast(`Waiter notified for Table ${activeTable.number}. Staff will be with you shortly.`, 'info');
+    showToast(`Server notified for Table ${activeTable.number}. Staff will be with you shortly.`, 'info');
+
+    try {
+      await callServerApi(activeTable.number, activeTable.zone);
+    } catch (e) {}
   };
 
   // Calculated totals in INR
@@ -434,7 +601,7 @@ export const RestaurantProvider = ({ children }) => {
       toast,
       showToast,
       emergencyHold,
-      setEmergencyHold,
+      setEmergencyHold: toggleEmergencyHold,
       adminAuth,
       loginAdmin,
       logoutAdmin,
@@ -443,7 +610,8 @@ export const RestaurantProvider = ({ children }) => {
       setSoundEnabled,
       playNewOrderBuzzer,
       playOrderReadyBuzzer,
-      playWaiterCallBuzzer
+      playWaiterCallBuzzer,
+      isBackendConnected
     }}>
       {children}
     </RestaurantContext.Provider>
