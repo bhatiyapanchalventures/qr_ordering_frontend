@@ -292,7 +292,7 @@ export interface ISetting extends Document {
   "data": [
     {
       "id": "660c1f4e8b34a12345678901",
-      "name": "Sakura A5 Wagwag Tataki",
+      "name": "Sakura A5 Wagyu Tataki",
       "category": "Chef Specials",
       "price": 1850,
       "prepTimeMinutes": 12,
